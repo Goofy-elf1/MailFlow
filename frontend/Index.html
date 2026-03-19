@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MailFlow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="css/Styles.css"/>
+</head>
+<body>
+
+<!-- ─── Login Screen ─────────────────────────────────────────────────────── -->
+<div id="login-screen" class="login-screen hidden">
+  <div class="login-card">
+    <div class="login-logo">Mail<em>Flow</em></div>
+    <p class="login-sub">AI email automation. Chains that never break.<br>Inboxes that always land primary.</p>
+    <a href="/auth/google" class="btn btn-google">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Connect Gmail account
+    </a>
+    <p class="login-note">Requires Gmail OAuth — your credentials stay on your server.</p>
+  </div>
+</div>
+
+<!-- ─── App Shell ────────────────────────────────────────────────────────── -->
+<div id="app" class="app hidden">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="logo">Mail<em>Flow</em></div>
+    <div class="topbar-center">
+      <div class="status-pill green" id="gmail-status">● Gmail connected</div>
+      <div class="status-pill amber">⚡ Warmup day 14</div>
+      <div class="status-pill" id="deliv-score">📬 Primary 94%</div>
+    </div>
+    <div class="topbar-right">
+      <span class="agent-name" id="agent-name"></span>
+      <button class="btn btn-ghost btn-sm" onclick="App.newThread()">+ New thread</button>
+      <button class="btn btn-ghost btn-sm" onclick="App.logout()">Sign out</button>
+    </div>
+  </header>
+
+  <div class="body-grid">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <nav>
+        <div class="nav-group-label">Threads</div>
+        <button class="nav-item active" data-filter="all" onclick="App.setFilter('all', this)">
+          <span class="ni-icon">📬</span> All <span class="ni-count" id="cnt-all">0</span>
+        </button>
+        <button class="nav-item" data-filter="ai" onclick="App.setFilter('ai', this)">
+          <span class="ni-icon">🤖</span> AI managed <span class="ni-count" id="cnt-ai">0</span>
+        </button>
+        <button class="nav-item" data-filter="human" onclick="App.setFilter('human', this)">
+          <span class="ni-icon">👤</span> Human active <span class="ni-count" id="cnt-human">0</span>
+        </button>
+
+        <div class="nav-group-label" style="margin-top:20px">Deliverability</div>
+        <div class="deliv-checks-mini">
+          <div class="dc-row"><span class="dc-ok">✓</span> SPF valid</div>
+          <div class="dc-row"><span class="dc-ok">✓</span> DKIM signed</div>
+          <div class="dc-row"><span class="dc-ok">✓</span> DMARC set</div>
+          <div class="dc-row"><span class="dc-ok">✓</span> text/plain alt</div>
+          <div class="dc-row"><span class="dc-ok">✓</span> Unsubscribe header</div>
+          <div class="dc-row"><span class="dc-ok">✓</span> Thread-chained</div>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Thread List -->
+    <section class="thread-list-pane" id="thread-list-pane">
+      <div class="list-header">
+        <input type="text" class="search-box" placeholder="Search threads…" oninput="App.search(this.value)"/>
+      </div>
+      <div id="thread-list"></div>
+      <div id="thread-empty" class="empty-state hidden">
+        <div class="empty-icon">📭</div>
+        <div>No threads yet</div>
+        <button class="btn btn-primary" style="margin-top:12px" onclick="App.newThread()">Start outreach</button>
+      </div>
+    </section>
+
+    <!-- Thread Detail -->
+    <section class="thread-detail-pane" id="thread-detail-pane">
+      <div class="detail-empty" id="detail-empty">
+        <div class="detail-empty-icon">✉</div>
+        <p>Select a thread to view the<br/>full conversation chain</p>
+      </div>
+      <div id="detail-content" class="hidden"></div>
+    </section>
+
+  </div>
+</div>
+
+<!-- ─── New Thread Modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="new-thread-modal" onclick="App.closeModal('new-thread-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title">New outreach thread</div>
+      <button class="modal-close" onclick="App.closeModal('new-thread-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <label class="field-label">Contact email</label>
+      <input type="email" id="nt-email" placeholder="contact@company.com"/>
+      <label class="field-label">Contact name</label>
+      <input type="text" id="nt-name" placeholder="First Last"/>
+      <label class="field-label">Company</label>
+      <input type="text" id="nt-company" placeholder="Acme Corp"/>
+      <label class="field-label">Subject</label>
+      <input type="text" id="nt-subject" placeholder="Partnership opportunity — Q2"/>
+      <label class="field-label">Opening message</label>
+      <textarea id="nt-body" class="modal-textarea" placeholder="Hi {{name}}, I wanted to reach out about…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.closeModal('new-thread-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="App.submitNewThread()">Send & start chain →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
