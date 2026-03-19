@@ -7,15 +7,18 @@
     "start": "node backend/server.js",
     "dev": "nodemon backend/server.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.20.0",
-    "@google/generative-ai": "^0.24.1",
+    "@google/generative-ai": "^0.21.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
     "express-session": "^1.18.0",
     "googleapis": "^140.0.1",
-    "groq-sdk": "^1.1.1",
+    "groq-sdk": "^0.9.0",
+    "pg": "^8.11.3",
     "sql.js": "^1.10.3",
     "uuid": "^9.0.1"
   },

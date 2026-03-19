@@ -10,7 +10,7 @@
 </head>
 <body>
 
-<!-- ─── Login Screen ─────────────────────────────────────────────────────── -->
+<!-- Login Screen -->
 <div id="login-screen" class="login-screen hidden">
   <div class="login-card">
     <div class="login-logo">Mail<em>Flow</em></div>
@@ -23,19 +23,20 @@
   </div>
 </div>
 
-<!-- ─── App Shell ────────────────────────────────────────────────────────── -->
+<!-- App Shell -->
 <div id="app" class="app hidden">
 
   <!-- Topbar -->
   <header class="topbar">
     <div class="logo">Mail<em>Flow</em></div>
     <div class="topbar-center">
-      <div class="status-pill green" id="gmail-status">● Gmail connected</div>
-      <div class="status-pill amber">⚡ Warmup day 14</div>
-      <div class="status-pill" id="deliv-score">📬 Primary 94%</div>
+      <div class="status-pill green">● Gmail connected</div>
+      <div class="status-pill amber">⚡ Warmup active</div>
+      <div class="status-pill">📬 Primary 94%</div>
     </div>
     <div class="topbar-right">
       <span class="agent-name" id="agent-name"></span>
+      <button class="btn btn-ghost btn-sm" onclick="App.openBulkSend()">📤 Bulk send</button>
       <button class="btn btn-ghost btn-sm" onclick="App.newThread()">+ New thread</button>
       <button class="btn btn-ghost btn-sm" onclick="App.logout()">Sign out</button>
     </div>
@@ -47,13 +48,13 @@
     <aside class="sidebar">
       <nav>
         <div class="nav-group-label">Threads</div>
-        <button class="nav-item active" data-filter="all" onclick="App.setFilter('all', this)">
+        <button class="nav-item active" onclick="App.setFilter('all', this)">
           <span class="ni-icon">📬</span> All <span class="ni-count" id="cnt-all">0</span>
         </button>
-        <button class="nav-item" data-filter="ai" onclick="App.setFilter('ai', this)">
+        <button class="nav-item" onclick="App.setFilter('ai', this)">
           <span class="ni-icon">🤖</span> AI managed <span class="ni-count" id="cnt-ai">0</span>
         </button>
-        <button class="nav-item" data-filter="human" onclick="App.setFilter('human', this)">
+        <button class="nav-item" onclick="App.setFilter('human', this)">
           <span class="ni-icon">👤</span> Human active <span class="ni-count" id="cnt-human">0</span>
         </button>
 
@@ -70,7 +71,7 @@
     </aside>
 
     <!-- Thread List -->
-    <section class="thread-list-pane" id="thread-list-pane">
+    <section class="thread-list-pane">
       <div class="list-header">
         <input type="text" class="search-box" placeholder="Search threads…" oninput="App.search(this.value)"/>
       </div>
@@ -79,11 +80,12 @@
         <div class="empty-icon">📭</div>
         <div>No threads yet</div>
         <button class="btn btn-primary" style="margin-top:12px" onclick="App.newThread()">Start outreach</button>
+        <button class="btn btn-ghost" style="margin-top:8px" onclick="App.openBulkSend()">📤 Bulk send</button>
       </div>
     </section>
 
     <!-- Thread Detail -->
-    <section class="thread-detail-pane" id="thread-detail-pane">
+    <section class="thread-detail-pane">
       <div class="detail-empty" id="detail-empty">
         <div class="detail-empty-icon">✉</div>
         <p>Select a thread to view the<br/>full conversation chain</p>
@@ -94,7 +96,7 @@
   </div>
 </div>
 
-<!-- ─── New Thread Modal ──────────────────────────────────────────────────── -->
+<!-- New Thread Modal -->
 <div class="modal-overlay hidden" id="new-thread-modal" onclick="App.closeModal('new-thread-modal')">
   <div class="modal" onclick="event.stopPropagation()">
     <div class="modal-header">
@@ -116,6 +118,48 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="App.closeModal('new-thread-modal')">Cancel</button>
       <button class="btn btn-primary" onclick="App.submitNewThread()">Send & start chain →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Send Modal -->
+<div class="modal-overlay hidden" id="bulk-send-modal" onclick="App.closeModal('bulk-send-modal')">
+  <div class="modal modal-wide" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title">📤 Bulk send — up to 100 emails</div>
+      <button class="modal-close" onclick="App.closeModal('bulk-send-modal')">×</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="bulk-tip">
+        💡 Supports <strong>{{name}}</strong> and <strong>{{company}}</strong> placeholders in subject and message.
+        Each email gets its own thread — AI will handle replies automatically.
+      </div>
+
+      <label class="field-label">Contacts — one per line, or CSV: email, name, company</label>
+      <textarea id="bulk-contacts" class="modal-textarea" style="min-height:120px;font-family:var(--font-mono);font-size:12px"
+        placeholder="john@acme.com, John Smith, Acme Corp&#10;jane@startup.io, Jane Doe, Startup Inc&#10;dev@techco.com"
+        oninput="App.previewBulkContacts()"></textarea>
+
+      <div id="bulk-preview" style="margin:8px 0"></div>
+
+      <label class="field-label">Subject</label>
+      <input type="text" id="bulk-subject" placeholder="Quick question about {{company}}'s growth"/>
+
+      <label class="field-label">Message — AI will handle replies from here</label>
+      <textarea id="bulk-body" class="modal-textarea" style="min-height:130px"
+        placeholder="Hi {{name}},&#10;&#10;I came across {{company}} and wanted to reach out…&#10;&#10;Would you have 15 minutes this week?"></textarea>
+
+      <div style="margin-top:10px;font-size:11px;color:var(--muted2)">
+        ⏱ Emails are sent with a 1.5s delay between each to avoid Gmail rate limits.
+        100 emails ≈ 2.5 minutes.
+      </div>
+
+      <div id="bulk-progress" class="hidden" style="margin-top:12px;padding:12px;background:var(--surface2);border-radius:var(--radius);"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.closeModal('bulk-send-modal')">Cancel</button>
+      <button class="btn btn-primary" id="bulk-send-btn" onclick="App.submitBulkSend()">Send to all →</button>
     </div>
   </div>
 </div>

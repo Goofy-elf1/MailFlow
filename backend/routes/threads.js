@@ -120,7 +120,6 @@ async function shouldEscalate({ contactName, latestMessage }) {
         },
       ],
     });
-
     const text = response.choices[0]?.message?.content?.trim() || '{"escalate":false,"reason":""}';
     return JSON.parse(text);
   } catch {
@@ -130,7 +129,7 @@ async function shouldEscalate({ contactName, latestMessage }) {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-// List threads (only threads you own or claimed)
+// List threads
 router.get('/api/threads', requireAuth, (req, res) => {
   const userId = req.user.id;
   const threads = db.prepare(`
@@ -154,28 +153,116 @@ router.get('/api/threads', requireAuth, (req, res) => {
   });
 });
 
-// Get thread detail (owner or claimed only)
+// Get thread detail
 router.get('/api/threads/:threadId', requireAuth, requireThreadAccess, (req, res) => {
   const contact  = db.prepare('SELECT * FROM contacts WHERE id = ?').get(req.thread.contact_id);
   const messages = db.prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at ASC').all(req.thread.id);
   res.json({ thread: req.thread, contact, messages });
 });
 
-// Claim thread (owner only)
+// ─── DELETE thread (owner only) ───────────────────────────────────────────────
+router.delete('/api/threads/:threadId', requireAuth, requireThreadOwner, (req, res) => {
+  const threadId = req.params.threadId;
+  // Delete messages first, then access grants, then thread
+  db.prepare('DELETE FROM messages WHERE thread_id = ?').run(threadId);
+  db.prepare('DELETE FROM thread_access WHERE thread_id = ?').run(threadId);
+  db.prepare('DELETE FROM threads WHERE id = ?').run(threadId);
+  res.json({ ok: true });
+});
+
+// ─── BULK SEND (up to 100 emails at once) ────────────────────────────────────
+// Accepts: { contacts: [{email, name, company}], subject, body, delayMs }
+// Sends with a delay between each to avoid Gmail rate limits
+// Supports {{name}} and {{company}} placeholders in subject/body
+router.post('/api/bulk-send', requireAuth, async (req, res) => {
+  const { contacts, subject, body, delayMs = 2000 } = req.body;
+
+  if (!contacts?.length)      return res.status(400).json({ error: 'No contacts provided' });
+  if (contacts.length > 100)  return res.status(400).json({ error: 'Max 100 contacts per bulk send' });
+  if (!subject || !body)      return res.status(400).json({ error: 'Subject and body are required' });
+
+  // Respond immediately — processing happens async
+  // Stream progress back via server-sent events would be ideal but for simplicity
+  // we process and return a summary
+  const results = { sent: [], failed: [] };
+
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+
+    // Replace placeholders
+    const personalizedSubject = subject
+      .replace(/\{\{name\}\}/gi, contact.name || contact.email.split('@')[0])
+      .replace(/\{\{company\}\}/gi, contact.company || '');
+
+    const personalizedBody = body
+      .replace(/\{\{name\}\}/gi, contact.name || contact.email.split('@')[0])
+      .replace(/\{\{company\}\}/gi, contact.company || '');
+
+    try {
+      // Upsert contact
+      let dbContact = db.prepare('SELECT * FROM contacts WHERE email = ?').get(contact.email);
+      if (!dbContact) {
+        const cid = uuid();
+        db.prepare('INSERT INTO contacts (id,email,name,company) VALUES (?,?,?,?)')
+          .run(cid, contact.email, contact.name || contact.email.split('@')[0], contact.company || '');
+        dbContact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(cid);
+      }
+
+      // Send email
+      const sent = await sendEmail(req.user, {
+        to: dbContact.email,
+        toName: dbContact.name,
+        subject: personalizedSubject,
+        body: personalizedBody,
+      });
+
+      // Create thread
+      const threadId = uuid();
+      db.prepare(`INSERT INTO threads (id,gmail_thread_id,contact_id,owner_id,subject,status,ai_mode) VALUES (?,?,?,?,?,'ai',1)`)
+        .run(threadId, sent.gmailThreadId, dbContact.id, req.user.id, personalizedSubject);
+
+      db.prepare(`INSERT INTO thread_access (thread_id,user_id,role) VALUES (?,?,'owner')`)
+        .run(threadId, req.user.id);
+
+      db.prepare(`INSERT INTO messages (id,thread_id,gmail_msg_id,role,from_name,from_email,body,message_id_header) VALUES (?,?,?,'outbound-ai',?,?,?,?)`)
+        .run(uuid(), threadId, sent.gmailMsgId, req.user.name, req.user.email, personalizedBody, sent.messageId);
+
+      results.sent.push({ email: contact.email, threadId });
+
+      // Delay between sends to avoid Gmail rate limits (skip delay on last email)
+      if (i < contacts.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    } catch (err) {
+      console.error(`Bulk send failed for ${contact.email}:`, err.message);
+      results.failed.push({ email: contact.email, error: err.message });
+    }
+  }
+
+  res.json({
+    ok: true,
+    total: contacts.length,
+    sent: results.sent.length,
+    failed: results.failed.length,
+    failures: results.failed,
+  });
+});
+
+// Claim thread
 router.post('/api/threads/:threadId/claim', requireAuth, requireThreadOwner, (req, res) => {
   db.prepare(`UPDATE threads SET status='human', claimed_by=?, updated_at=strftime('%s','now') WHERE id=?`)
     .run(req.user.id, req.params.threadId);
   res.json({ ok: true, claimedBy: req.user.name });
 });
 
-// Release back to AI (owner only)
+// Release back to AI
 router.post('/api/threads/:threadId/release', requireAuth, requireThreadOwner, (req, res) => {
   db.prepare(`UPDATE threads SET status='ai', claimed_by=NULL, ai_mode=1, updated_at=strftime('%s','now') WHERE id=?`)
     .run(req.params.threadId);
   res.json({ ok: true });
 });
 
-// Toggle AI mode mid-conversation (owner only)
+// Toggle AI mode
 router.post('/api/threads/:threadId/toggle-ai', requireAuth, requireThreadOwner, (req, res) => {
   const { aiMode } = req.body;
   db.prepare(`UPDATE threads SET ai_mode=?, status=?, updated_at=strftime('%s','now') WHERE id=?`)
@@ -183,7 +270,7 @@ router.post('/api/threads/:threadId/toggle-ai', requireAuth, requireThreadOwner,
   res.json({ ok: true, aiMode });
 });
 
-// Send reply (owner or claimed)
+// Send reply
 router.post('/api/threads/:threadId/reply', requireAuth, requireThreadAccess, async (req, res) => {
   const { body, role } = req.body;
   const thread  = req.thread;
@@ -219,7 +306,7 @@ router.post('/api/threads/:threadId/reply', requireAuth, requireThreadAccess, as
   }
 });
 
-// Generate AI draft (owner or claimed)
+// Generate AI draft
 router.post('/api/threads/:threadId/draft', requireAuth, requireThreadAccess, async (req, res) => {
   const contact  = db.prepare('SELECT * FROM contacts WHERE id = ?').get(req.thread.contact_id);
   const messages = db.prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at ASC').all(req.thread.id);
@@ -244,7 +331,7 @@ router.post('/api/threads/:threadId/draft', requireAuth, requireThreadAccess, as
   }
 });
 
-// Create new thread / start outreach
+// Create single thread
 router.post('/api/threads', requireAuth, async (req, res) => {
   const { contactEmail, contactName, contactCompany, subject, body } = req.body;
 

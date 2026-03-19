@@ -1,16 +1,13 @@
-/* MailFlow — Frontend App Logic
- * All API calls go to /api/* on the same origin (Express backend).
- * No API keys or secrets live in this file — those are in .env on the server.
- */
+/* MailFlow — Frontend App Logic */
 
 const App = (() => {
-  // ─── State ────────────────────────────────────────────────────────────────
   let currentUser   = null;
   let threads       = [];
-  let activeThread  = null;   // full thread object
+  let activeThread  = null;
   let currentFilter = 'all';
   let searchQuery   = '';
   let toastTimer    = null;
+  let autoRefreshTimer = null;
 
   // ─── Init ─────────────────────────────────────────────────────────────────
   async function init() {
@@ -24,6 +21,15 @@ const App = (() => {
       hide('login-screen');
       document.getElementById('agent-name').textContent = user.name;
       await loadThreads();
+      // Auto-refresh thread list every 30 seconds to pick up inbound replies
+      autoRefreshTimer = setInterval(async () => {
+        await loadThreads();
+        // Also refresh open thread if there is one
+        if (activeThread) {
+          const data = await api(`/api/threads/${activeThread.id}`).catch(() => null);
+          if (data) renderDetail(data.thread, data.contact, data.messages);
+        }
+      }, 30000);
     }
   }
 
@@ -95,6 +101,7 @@ const App = (() => {
             <div class="ti-dot ${dotCls}"></div>
             <div class="ti-from">${esc(t.contact_name)}</div>
             <div class="ti-time">${timeAgo(t.updated_at)}</div>
+            <button class="ti-delete-btn" onclick="event.stopPropagation(); App.deleteThread('${t.id}', '${esc(t.contact_name)}')" title="Delete thread">✕</button>
           </div>
           <div class="ti-subject">${esc(t.subject)}</div>
           <div class="ti-preview">${esc(t.last_message_preview || '—')}</div>
@@ -119,14 +126,11 @@ const App = (() => {
     try {
       const data = await api(`/api/threads/${threadId}`);
       activeThread = data.thread;
-      renderList(); // refresh active state
-
+      renderList();
       hide('detail-empty');
       show('detail-content');
-
       renderDetail(data.thread, data.contact, data.messages);
     } catch (e) {
-      // 403 = not owner/claimed
       if (e.message.includes('Access denied') || e.message.includes('403')) {
         toast('🔒 You can only view threads you started or claimed.');
       } else {
@@ -145,7 +149,6 @@ const App = (() => {
     const el = document.getElementById('detail-content');
 
     el.innerHTML = `
-      <!-- Header -->
       <div class="detail-header">
         <div>
           <div class="detail-subject">${esc(thread.subject)}</div>
@@ -165,10 +168,12 @@ const App = (() => {
           ${(isOwner || isClaimed) && isHuman
             ? `<button class="btn btn-sm btn-ai" onclick="App.releaseThread('${thread.id}')">🤖 Return to AI</button>`
             : ''}
+          ${isOwner
+            ? `<button class="btn btn-sm btn-danger" onclick="App.deleteThread('${thread.id}', '${esc(contact.name)}')">🗑 Delete</button>`
+            : ''}
         </div>
       </div>
 
-      <!-- AI / Human mid-thread toggle (owner only) -->
       ${isOwner ? `
       <div class="mode-toggle">
         <div class="mode-toggle-label">
@@ -176,24 +181,19 @@ const App = (() => {
         </div>
         <div class="toggle-switch">
           <button class="toggle-opt ${isAiMode ? 'active-ai' : ''}"
-                  onclick="App.toggleAiMode('${thread.id}', true)"
-                  id="btn-ai-mode">🤖 AI</button>
+                  onclick="App.toggleAiMode('${thread.id}', true)">🤖 AI</button>
           <button class="toggle-opt ${!isAiMode ? 'active-human' : ''}"
-                  onclick="App.toggleAiMode('${thread.id}', false)"
-                  id="btn-human-mode">👤 Me</button>
+                  onclick="App.toggleAiMode('${thread.id}', false)">👤 Me</button>
         </div>
       </div>` : ''}
 
-      <!-- Escalation banner placeholder -->
       <div id="escalation-banner" class="escalation-banner hidden"></div>
 
-      <!-- Messages chain -->
       <div class="section-title">Conversation chain</div>
       <div id="messages-chain">
-        ${messages.map((m, i) => renderMessage(m, contact)).join('')}
+        ${messages.map(m => renderMessage(m, contact)).join('')}
       </div>
 
-      <!-- Composer (owner or claimed only) -->
       ${(isOwner || isClaimed) ? `
       <div class="section-title">Compose reply</div>
       <div class="composer ${isAiMode ? '' : 'human-mode'}" id="composer">
@@ -234,7 +234,7 @@ const App = (() => {
     `;
   }
 
-  // ─── Render a single message bubble ──────────────────────────────────────
+  // ─── Render message bubble ────────────────────────────────────────────────
   function renderMessage(msg, contact) {
     const roleMap = {
       'outbound-ai':    { cls: 'outbound-ai',    avCls: 'ai',      avLetter: 'AI', badgeCls: 'ai',    label: 'AI sent' },
@@ -256,15 +256,138 @@ const App = (() => {
         <button class="show-headers-btn" onclick="toggleHeaders('${hid}')">show thread headers</button>
         <div class="msg-headers" id="${hid}">
           ${msg.message_id_header ? `<code>Message-ID: ${esc(msg.message_id_header)}</code>` : ''}
-          ${msg.in_reply_to       ? `<code>In-Reply-To: ${esc(msg.in_reply_to)}</code>` : ''}
-          ${msg.references_header ? `<code>References: ${esc(msg.references_header)}</code>` : ''}
+          ${msg.in_reply_to       ? `<code>In-Reply-To: ${esc(msg.in_reply_to)}</code>`       : ''}
+          ${msg.references_header ? `<code>References: ${esc(msg.references_header)}</code>`  : ''}
         </div>
       </div>
     `;
   }
 
-  // ─── Thread actions ────────────────────────────────────────────────────────
+  // ─── Delete thread ────────────────────────────────────────────────────────
+  async function deleteThread(threadId, contactName) {
+    if (!confirm(`Delete thread with ${contactName}? This cannot be undone.`)) return;
+    try {
+      await api(`/api/threads/${threadId}`, { method: 'DELETE' });
+      if (activeThread?.id === threadId) {
+        activeThread = null;
+        hide('detail-content');
+        show('detail-empty');
+      }
+      toast(`🗑 Thread deleted`);
+      await loadThreads();
+    } catch (e) { toast('Error: ' + e.message); }
+  }
 
+  // ─── Bulk send modal ──────────────────────────────────────────────────────
+  function openBulkSend() {
+    // Reset form
+    document.getElementById('bulk-contacts').value = '';
+    document.getElementById('bulk-subject').value  = '';
+    document.getElementById('bulk-body').value     = '';
+    document.getElementById('bulk-preview').innerHTML = '';
+    document.getElementById('bulk-progress').classList.add('hidden');
+    show('bulk-send-modal');
+  }
+
+  function previewBulkContacts() {
+    const raw = document.getElementById('bulk-contacts').value.trim();
+    const preview = document.getElementById('bulk-preview');
+    if (!raw) { preview.innerHTML = ''; return; }
+
+    const contacts = parseBulkContacts(raw);
+    if (!contacts.length) {
+      preview.innerHTML = `<div style="color:var(--red);font-size:12px">Could not parse contacts. Use one email per line or CSV format.</div>`;
+      return;
+    }
+    if (contacts.length > 100) {
+      preview.innerHTML = `<div style="color:var(--red);font-size:12px">⚠ Max 100 contacts. You have ${contacts.length}.</div>`;
+      return;
+    }
+
+    preview.innerHTML = `
+      <div style="font-size:12px;color:var(--green);margin-bottom:6px">✓ ${contacts.length} contact${contacts.length !== 1 ? 's' : ''} ready</div>
+      <div style="max-height:120px;overflow-y:auto;">
+        ${contacts.slice(0, 10).map(c =>
+          `<div style="font-size:11px;color:var(--muted);padding:2px 0">${esc(c.name || '—')} &lt;${esc(c.email)}&gt; ${c.company ? `· ${esc(c.company)}` : ''}</div>`
+        ).join('')}
+        ${contacts.length > 10 ? `<div style="font-size:11px;color:var(--muted2)">… and ${contacts.length - 10} more</div>` : ''}
+      </div>
+    `;
+  }
+
+  function parseBulkContacts(raw) {
+    const contacts = [];
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+
+    for (const line of lines) {
+      // CSV format: email, name, company
+      if (line.includes(',')) {
+        const parts = line.split(',').map(p => p.trim());
+        const email = parts[0];
+        if (!email.includes('@')) continue;
+        contacts.push({ email, name: parts[1] || '', company: parts[2] || '' });
+      } else {
+        // Just an email address
+        const email = line.trim();
+        if (!email.includes('@')) continue;
+        contacts.push({ email, name: '', company: '' });
+      }
+    }
+    return contacts;
+  }
+
+  async function submitBulkSend() {
+    const raw     = document.getElementById('bulk-contacts').value.trim();
+    const subject = document.getElementById('bulk-subject').value.trim();
+    const body    = document.getElementById('bulk-body').value.trim();
+
+    if (!raw || !subject || !body) {
+      toast('Contacts, subject, and message are all required');
+      return;
+    }
+
+    const contacts = parseBulkContacts(raw);
+    if (!contacts.length) { toast('No valid contacts found'); return; }
+    if (contacts.length > 100) { toast('Max 100 contacts per send'); return; }
+
+    // Show progress
+    const progress = document.getElementById('bulk-progress');
+    progress.classList.remove('hidden');
+    progress.innerHTML = `<div style="font-size:13px;color:var(--muted)">⏳ Sending to ${contacts.length} contacts — please wait, this may take a minute…</div>`;
+
+    // Disable send button
+    const sendBtn = document.getElementById('bulk-send-btn');
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending…';
+
+    try {
+      const result = await api('/api/bulk-send', {
+        method: 'POST',
+        body: { contacts, subject, body, delayMs: 1500 },
+      });
+
+      progress.innerHTML = `
+        <div style="font-size:13px;color:var(--green)">✓ Sent ${result.sent} of ${result.total} emails</div>
+        ${result.failed > 0
+          ? `<div style="font-size:12px;color:var(--red);margin-top:4px">⚠ ${result.failed} failed: ${result.failures.map(f => f.email).join(', ')}</div>`
+          : ''}
+      `;
+
+      toast(`🚀 Bulk send complete — ${result.sent} emails sent`);
+      await loadThreads();
+
+      // Close modal after 2s
+      setTimeout(() => closeModal('bulk-send-modal'), 2000);
+    } catch (e) {
+      progress.innerHTML = `<div style="font-size:13px;color:var(--red)">✗ Error: ${esc(e.message)}</div>`;
+      toast('Bulk send error: ' + e.message);
+    } finally {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send to all →';
+    }
+  }
+
+  // ─── Thread actions ────────────────────────────────────────────────────────
   async function claimThread(threadId) {
     try {
       await api(`/api/threads/${threadId}/claim`, { method: 'POST' });
@@ -283,25 +406,15 @@ const App = (() => {
     } catch (e) { toast('Error: ' + e.message); }
   }
 
-  // ─── AI / Human mid-thread toggle ─────────────────────────────────────────
-  // The core feature: switch who handles the NEXT reply without losing history.
   async function toggleAiMode(threadId, aiMode) {
     try {
-      await api(`/api/threads/${threadId}/toggle-ai`, {
-        method: 'POST',
-        body: { aiMode },
-      });
-
-      const label = aiMode ? '🤖 AI will handle next reply' : '👤 You\'ll handle next reply';
-      toast(label);
-
-      // Refresh detail pane
+      await api(`/api/threads/${threadId}/toggle-ai`, { method: 'POST', body: { aiMode } });
+      toast(aiMode ? '🤖 AI will handle next reply' : '👤 You\'ll handle next reply');
       await openThread(threadId);
       await loadThreads();
     } catch (e) { toast('Error: ' + e.message); }
   }
 
-  // ─── Generate AI draft ─────────────────────────────────────────────────────
   async function generateDraft(threadId) {
     const btn = document.getElementById('draft-btn');
     const ta  = document.getElementById('composer-text');
@@ -310,13 +423,12 @@ const App = (() => {
     btn.textContent = '⏳ Generating…';
     btn.disabled = true;
     ta.value = '';
-    ta.placeholder = 'Claude is reading the full thread chain…';
+    ta.placeholder = 'AI is reading the full thread chain…';
 
     try {
       const { draft, escalation } = await api(`/api/threads/${threadId}/draft`, { method: 'POST' });
       ta.value = draft;
 
-      // Show escalation warning if needed
       if (escalation?.escalate) {
         const banner = document.getElementById('escalation-banner');
         banner.innerHTML = `⚠ AI suggests human review: ${esc(escalation.reason)}`;
@@ -332,20 +444,16 @@ const App = (() => {
     }
   }
 
-  // ─── Send reply ────────────────────────────────────────────────────────────
   async function sendReply(threadId, isAiMode) {
     const ta = document.getElementById('composer-text');
     const body = ta?.value?.trim();
     if (!body) { toast('Write something first'); return; }
 
-    const role = isAiMode ? 'outbound-ai' : 'outbound-human';
-
     try {
       await api(`/api/threads/${threadId}/reply`, {
         method: 'POST',
-        body: { body, role },
+        body: { body, role: isAiMode ? 'outbound-ai' : 'outbound-human' },
       });
-
       toast('✓ Reply sent — thread chain updated');
       ta.value = '';
       await openThread(threadId);
@@ -358,17 +466,17 @@ const App = (() => {
     if (ta) ta.value = '';
   }
 
-  // ─── New thread modal ─────────────────────────────────────────────────────
+  // ─── Single new thread modal ──────────────────────────────────────────────
   function newThread() {
-    document.getElementById('new-thread-modal').classList.remove('hidden');
+    show('new-thread-modal');
   }
 
   async function submitNewThread() {
-    const contactEmail  = v('nt-email');
-    const contactName   = v('nt-name');
-    const contactCompany= v('nt-company');
-    const subject       = v('nt-subject');
-    const body          = v('nt-body');
+    const contactEmail   = v('nt-email');
+    const contactName    = v('nt-name');
+    const contactCompany = v('nt-company');
+    const subject        = v('nt-subject');
+    const body           = v('nt-body');
 
     if (!contactEmail || !subject || !body) {
       toast('Email, subject, and message are required');
@@ -380,7 +488,6 @@ const App = (() => {
         method: 'POST',
         body: { contactEmail, contactName, contactCompany, subject, body },
       });
-
       closeModal('new-thread-modal');
       toast('🚀 Thread started — first email sent');
       await loadThreads();
@@ -401,7 +508,6 @@ const App = (() => {
     renderList();
   }
 
-  // ─── Auth ─────────────────────────────────────────────────────────────────
   async function logout() {
     await api('/api/logout', { method: 'POST' });
     location.reload();
@@ -416,9 +522,9 @@ const App = (() => {
 
   function timeAgo(unixTs) {
     const diff = Math.floor(Date.now() / 1000) - unixTs;
-    if (diff < 60)   return 'just now';
-    if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
-    if (diff < 86400)return `${Math.floor(diff/3600)}h ago`;
+    if (diff < 60)    return 'just now';
+    if (diff < 3600)  return `${Math.floor(diff/60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
     return `${Math.floor(diff/86400)}d ago`;
   }
 
@@ -430,19 +536,17 @@ const App = (() => {
     toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
   }
 
-  // Public exports
   return {
     init, openThread, claimThread, releaseThread,
     toggleAiMode, generateDraft, sendReply, clearDraft,
+    deleteThread, openBulkSend, previewBulkContacts, submitBulkSend,
     newThread, submitNewThread, closeModal,
     setFilter, search, logout,
   };
 })();
 
-// ─── Global helpers ────────────────────────────────────────────────────────────
 function toggleHeaders(id) {
   document.getElementById(id)?.classList.toggle('open');
 }
 
-// ─── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', App.init);
